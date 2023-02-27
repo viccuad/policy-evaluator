@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use thiserror::Error;
 use email_address::*;
 use mail_parser::*;
 use semver::Version;
@@ -20,6 +20,38 @@ use crate::constants::{
     KUBEWARDEN_ANNOTATION_POLICY_USAGE, KUBEWARDEN_ANNOTATION_RANCHER_HIDDENUI,
 };
 use crate::policy_metadata::Metadata;
+
+pub type Result<T> = std::result::Result<T, ArtifactHubError>;
+
+#[derive(Error, Debug)]
+pub enum ArtifactHubError {
+    #[error("no annotations in policy metadata. policy metadata must specify annotations")]
+    NoAnnotations,
+
+    #[error("policy version must be in semver: {0}")]
+    NoSemverVersion(String),
+
+    #[error("questions-ui content cannot be empty")]
+    EmptyQuestionsUI,
+
+    #[error("policy metadata must specify \"{0}\" in annotations")]
+    MissingAnnotation(String),
+
+    #[error("annotation \"{annot:?}\" in policy metadata must be a well formed URL: {error:?}")]
+    MalformedURL { annot: String, error: String },
+
+    #[error("annotation \"{0}\" in policy metadata is malformed, must be csv values")]
+    MalformedCSV(String),
+
+    #[error("annotation \"{0}\" in policy metadata is malformed, must be csv values of \"name <email>\"")]
+    MalformedCSVEmail(String),
+
+    #[error("annotation \"{annot:?}\" in policy metadata must be a well formed URL: {error:?}")]
+    MalformedEmail { annot: String, error: String },
+
+    #[error("annotation \"{0}\" in policy metadata is malformed, must be a string \"true\" or \"false\"")]
+    MalformedBoolString(String),
+}
 
 /// Partial implementation of the format of artifacthub-pkg.yml file as defined
 /// in
@@ -158,23 +190,19 @@ impl ArtifactHubPkg {
     ) -> Result<Self> {
         // validate inputs
         if metadata.annotations.is_none() {
-            return Err(anyhow!(
-                "no annotations in policy metadata. policy metadata must specify annotations"
-            ));
+            return Err(ArtifactHubError::NoAnnotations);
         }
         let metadata_annots = metadata.annotations.as_ref().unwrap();
         if metadata_annots.is_empty() {
-            return Err(anyhow!(
-                "no annotations in policy metadata. policy metadata must specify annotations"
-            ));
+            return Err(ArtifactHubError::NoAnnotations);
         }
         let semver_version = Version::parse(version)
-            .map_err(|e| anyhow!("policy version must be in semver: {}", e))?;
+            .map_err(|e| ArtifactHubError::NoSemverVersion(e.to_string()))?;
         if questions
             .and_then(|q| if q.is_empty() { Some(q) } else { None })
             .is_some()
         {
-            return Err(anyhow!("questions-ui content cannot be empty"));
+            return Err(ArtifactHubError::EmptyQuestionsUI);
         }
 
         // build struct
@@ -217,10 +245,7 @@ fn parse_name(metadata_annots: &HashMap<String, String>) -> Result<String> {
     metadata_annots
         .get(KUBEWARDEN_ANNOTATION_POLICY_TITLE)
         .ok_or_else(|| {
-            anyhow!(
-                "policy metadata must specify \"{}\" in annotations",
-                KUBEWARDEN_ANNOTATION_POLICY_TITLE,
-            )
+            ArtifactHubError::MissingAnnotation(String::from(KUBEWARDEN_ANNOTATION_POLICY_TITLE))
         })
         .cloned()
 }
@@ -229,10 +254,9 @@ fn parse_display_name(metadata_annots: &HashMap<String, String>) -> Result<Strin
     metadata_annots
         .get(KUBEWARDEN_ANNOTATION_ARTIFACTHUB_DISPLAYNAME)
         .ok_or_else(|| {
-            anyhow!(
-                "policy metadata must specify \"{}\" in annotations",
+            ArtifactHubError::MissingAnnotation(String::from(
                 KUBEWARDEN_ANNOTATION_ARTIFACTHUB_DISPLAYNAME,
-            )
+            ))
         })
         .cloned()
 }
@@ -241,10 +265,9 @@ fn parse_description(metadata_annots: &HashMap<String, String>) -> Result<String
     metadata_annots
         .get(KUBEWARDEN_ANNOTATION_POLICY_DESCRIPTION)
         .ok_or_else(|| {
-            anyhow!(
-                "policy metadata must specify \"{}\" in annotations",
+            ArtifactHubError::MissingAnnotation(String::from(
                 KUBEWARDEN_ANNOTATION_POLICY_DESCRIPTION,
-            )
+            ))
         })
         .cloned()
 }
@@ -252,12 +275,9 @@ fn parse_description(metadata_annots: &HashMap<String, String>) -> Result<String
 fn parse_home_url(metadata_annots: &HashMap<String, String>) -> Result<Option<Url>> {
     match metadata_annots.get(KUBEWARDEN_ANNOTATION_POLICY_URL) {
         Some(s) => {
-            let url = Url::parse(s).map_err(|e| {
-                anyhow!(
-                    "annotation \"{}\" in policy metadata must be a well formed URL: {}",
-                    KUBEWARDEN_ANNOTATION_POLICY_URL,
-                    e
-                )
+            let url = Url::parse(s).map_err(|e| ArtifactHubError::MalformedURL {
+                annot: String::from(KUBEWARDEN_ANNOTATION_POLICY_URL),
+                error: e.to_string(),
             })?;
             Ok(Some(url))
         }
@@ -272,12 +292,9 @@ fn parse_containers_images(
     match metadata_annots.get(KUBEWARDEN_ANNOTATION_POLICY_OCIURL) {
         Some(s) => {
             let oci_url = Url::parse(format!("{}:v{}", s, version.to_string().as_str()).as_str())
-                .map_err(|e| {
-                anyhow!(
-                    "annotation \"{}\" in policy metadata must be a well formed URL: {}",
-                    KUBEWARDEN_ANNOTATION_POLICY_OCIURL,
-                    e
-                )
+                .map_err(|e| ArtifactHubError::MalformedURL {
+                annot: String::from(KUBEWARDEN_ANNOTATION_POLICY_OCIURL),
+                error: e.to_string(),
             })?;
             let container_images = vec![ContainerImage {
                 name: ConstContainerImageName::Policy,
@@ -286,10 +303,9 @@ fn parse_containers_images(
             Ok(Some(container_images))
         }
         None => {
-            return Err(anyhow!(
-                "policy metadata must specify \"{}\" in annotations",
+            Err(ArtifactHubError::MissingAnnotation(String::from(
                 KUBEWARDEN_ANNOTATION_POLICY_OCIURL,
-            ))
+            )))
         }
     }
 }
@@ -306,10 +322,9 @@ fn parse_keywords(metadata_annots: &HashMap<String, String>) -> Result<Option<Ve
                 .map(str::to_string)
                 .collect::<Vec<String>>();
             if csv.clone().into_iter().any(|word| word.is_empty()) {
-                Err(anyhow!(
-                    "annotation \"{}\" in policy metadata is malformed, must be csv values",
-                    KUBEWARDEN_ANNOTATION_ARTIFACTHUB_KEYWORDS
-                ))
+                Err(ArtifactHubError::MalformedCSV(String::from(
+                    KUBEWARDEN_ANNOTATION_ARTIFACTHUB_KEYWORDS,
+                )))
             } else {
                 Ok(Some(csv))
             }
@@ -327,11 +342,10 @@ fn parse_links(
     match metadata_annots.get(KUBEWARDEN_ANNOTATION_POLICY_SOURCE) {
         Some(s) => {
             let policy_source = Url::parse(s).map_err(|e| {
-                anyhow!(
-                    "annotation \"{}\" in policy metadata must be a well formed url: {}",
-                    KUBEWARDEN_ANNOTATION_POLICY_SOURCE,
-                    e
-                )
+                ArtifactHubError::MalformedURL {
+                    annot: String::from(KUBEWARDEN_ANNOTATION_POLICY_SOURCE),
+                    error: e.to_string(),
+                }
             })?;
             match policy_source.host_str() == Some("github.com") {
                 true => {
@@ -344,11 +358,10 @@ fn parse_links(
                         .as_str(),
                     )
                     .map_err(|e| {
-                        anyhow!(
-                            "annotation \"{}\" in policy metadata must be a well formed url: {}",
-                            KUBEWARDEN_ANNOTATION_POLICY_SOURCE,
-                            e
-                        )
+                        ArtifactHubError::MalformedURL {
+                            annot: String::from(KUBEWARDEN_ANNOTATION_POLICY_SOURCE),
+                            error: e.to_string(),
+                        }
                     })?;
                     Ok(Some(vec![
                         Link {
@@ -379,25 +392,23 @@ fn parse_maintainers(metadata_annots: &HashMap<String, String>) -> Result<Option
             // name-addr https://www.rfc-editor.org/rfc/rfc5322#section-3.4
             let mut maintainers: Vec<Maintainer> = vec![];
             let to = format!("To: {}", s);
-            let msg = mail_parser::Message::parse(to.as_bytes())
-                .ok_or(
-                    anyhow!(
-                    "annotation \"{}\" in policy metadata is malformed, must be csv values of \"name <email>\"",
-                    KUBEWARDEN_ANNOTATION_POLICY_AUTHOR
-                    )
-                )?;
+            let msg = mail_parser::Message::parse(to.as_bytes()).ok_or(
+                ArtifactHubError::MalformedCSVEmail(String::from(
+                    KUBEWARDEN_ANNOTATION_POLICY_AUTHOR,
+                )),
+            )?;
 
             let addr = msg.to();
 
             match addr {
                 HeaderValue::Address(addr) => {
-                    let email = EmailAddress::from_str(&addr.address.clone().unwrap_or_default()).map_err(|e|
-                    anyhow!(
-                        "annotation \"{}\" in policy metadata is malformed, email address malformed: {}",
-                        KUBEWARDEN_ANNOTATION_POLICY_AUTHOR,
-                        e,
-                    )
-                )?;
+                    let email = EmailAddress::from_str(&addr.address.clone().unwrap_or_default())
+                        .map_err(|e| {
+                        ArtifactHubError::MalformedEmail {
+                            annot: String::from(KUBEWARDEN_ANNOTATION_POLICY_AUTHOR),
+                            error: e.to_string(),
+                        }
+                    })?;
 
                     maintainers.push(Maintainer {
                         name: addr.name.clone().unwrap_or_default().to_string(),
@@ -406,13 +417,13 @@ fn parse_maintainers(metadata_annots: &HashMap<String, String>) -> Result<Option
                 }
                 HeaderValue::AddressList(vec_addr) => {
                     for a in vec_addr {
-                        let email = EmailAddress::from_str(&a.address.clone().unwrap_or_default()).map_err(|e|
-                    anyhow!(
-                        "annotation \"{}\" in policy metadata is malformed, email address malformed: {}",
-                        KUBEWARDEN_ANNOTATION_POLICY_AUTHOR,
-                        e,
-                    )
-                )?;
+                        let email = EmailAddress::from_str(&a.address.clone().unwrap_or_default())
+                            .map_err(|e| {
+                                ArtifactHubError::MalformedEmail {
+                                    annot: String::from(KUBEWARDEN_ANNOTATION_POLICY_AUTHOR),
+                                    error: e.to_string(),
+                                }
+                            })?;
                         maintainers.push(Maintainer {
                             name: a.name.clone().unwrap_or_default().to_string(),
                             email: email.to_string(),
@@ -420,10 +431,9 @@ fn parse_maintainers(metadata_annots: &HashMap<String, String>) -> Result<Option
                     }
                 }
                 _ => {
-                    return Err(anyhow!(
-                        "annotation \"{}\" in policy metadata is malformed, must be csv values",
-                        KUBEWARDEN_ANNOTATION_POLICY_AUTHOR
-                    ))
+                    return Err(ArtifactHubError::MalformedCSVEmail(String::from(
+                        KUBEWARDEN_ANNOTATION_POLICY_AUTHOR,
+                    )))
                 }
             }
             Ok(Some(maintainers))
@@ -463,10 +473,7 @@ fn parse_annotations(
         annotations.insert(
             ARTIFACTHUB_ANNOTATION_RANCHER_HIDDENUI.to_string(),
             FromStr::from_str(string_bool).map_err(|_| {
-                anyhow!(
-                    "annotation \"{}\" in policy metadata is malformed, must be boolean",
-                    KUBEWARDEN_ANNOTATION_RANCHER_HIDDENUI
-                )
+                ArtifactHubError::MalformedBoolString(String::from(KUBEWARDEN_ANNOTATION_RANCHER_HIDDENUI))
             })?,
         );
     };
@@ -484,10 +491,9 @@ fn parse_readme(metadata_annots: &HashMap<String, String>) -> Result<Option<Stri
     match metadata_annots.get(KUBEWARDEN_ANNOTATION_POLICY_USAGE) {
         Some(s) => Ok(Some(s.to_string())),
         None => {
-            return Err(anyhow!(
-                "policy metadata must specify \"{}\" in annotations",
-                KUBEWARDEN_ANNOTATION_POLICY_USAGE,
-            ))
+            Err(
+                ArtifactHubError::MissingAnnotation(String::from(KUBEWARDEN_ANNOTATION_POLICY_USAGE))
+            )
         }
     }
 }
@@ -598,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn artifacthubpkg_validate_inputs() -> Result<(), ()> {
+    fn artifacthubpkg_validate_inputs() -> Result<()> {
         // check annotations None
         let arthub = ArtifactHubPkg::from_metadata(
             &Metadata::default(),
@@ -651,7 +657,7 @@ mod tests {
     }
 
     #[test]
-    fn check_parse_keywords() -> Result<(), ()> {
+    fn check_parse_keywords() -> Result<()> {
         let keywords_annot = HashMap::from([(
             String::from(KUBEWARDEN_ANNOTATION_ARTIFACTHUB_KEYWORDS),
             String::from(" foo,bar, faz fiz, baz"),
@@ -696,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn check_parse_links() -> Result<(), ()> {
+    fn check_parse_links() -> Result<()> {
         let semver_version = Version::parse("0.2.1").unwrap();
         let source_annot = HashMap::from([(
             String::from(KUBEWARDEN_ANNOTATION_POLICY_SOURCE),
@@ -738,7 +744,7 @@ mod tests {
     }
 
     #[test]
-    fn check_parse_maintainers() -> Result<(), ()> {
+    fn check_parse_maintainers() -> Result<()> {
         let author_annot = HashMap::from([(
             String::from(KUBEWARDEN_ANNOTATION_POLICY_AUTHOR),
             String::from("Tux Tuxedo <tux@example.com>, Pidgin <pidgin@example.com>"),
@@ -802,7 +808,7 @@ mod tests {
     }
 
     #[test]
-    fn artifacthubpkg_missing_required() -> Result<(), ()> {
+    fn artifacthubpkg_missing_required() -> Result<()> {
         let semver_version = Version::parse("0.2.1").unwrap();
         let invalid_annotations = HashMap::from([(String::from("foo"), String::from("bar"))]);
 
@@ -822,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn artifacthubpkg_with_minimum_required() -> Result<(), ()> {
+    fn artifacthubpkg_with_minimum_required() -> Result<()> {
         let artif = ArtifactHubPkg::from_metadata(
             &mock_metadata_with_minimum_required(),
             "0.2.1",
@@ -865,7 +871,7 @@ mod tests {
     }
 
     #[test]
-    fn artifacthubpkg_with_all() -> Result<(), ()> {
+    fn artifacthubpkg_with_all() -> Result<()> {
         let artif = ArtifactHubPkg::from_metadata(
             &mock_metadata_with_all(),
             "0.2.1",
